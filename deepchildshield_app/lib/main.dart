@@ -4,8 +4,95 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:math' as math;
 import 'package:http/http.dart' as http;
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:workmanager/workmanager.dart';
 
-void main() {
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+    FlutterLocalNotificationsPlugin();
+
+const String backgroundTaskKey = "deepchildshield_background_monitor";
+
+@pragma('vm:entry-point')
+void callbackDispatcher() {
+  Workmanager().executeTask((task, inputData) async {
+    try {
+      final host = inputData?['host'] ?? '192.168.29.217:5001';
+      final url = Uri.parse('http://$host/api/alerts');
+      final res = await http.get(url).timeout(const Duration(seconds: 4));
+      if (res.statusCode == 200) {
+        final list = jsonDecode(res.body);
+        if (list is List && list.isNotEmpty) {
+          final latest = list.first;
+          final zone = latest['zone'] ?? 'Danger Zone';
+          final conf = latest['confidence'] != null ? '${(latest['confidence'] * 100).toInt()}%' : '';
+          
+          final androidDetails = AndroidNotificationDetails(
+            'danger_zone_channel',
+            'Danger Zone Alerts',
+            channelDescription: 'High priority alerts when child enters danger zone',
+            importance: Importance.max,
+            priority: Priority.high,
+            playSound: true,
+            enableVibration: true,
+            fullScreenIntent: true,
+          );
+          final notifDetails = NotificationDetails(android: androidDetails);
+          await flutterLocalNotificationsPlugin.show(
+            id: 1001,
+            title: '🚨 DANGER ZONE ALERT!',
+            body: 'Child detected in $zone ($conf)! Take immediate action.',
+            notificationDetails: notifDetails,
+          );
+        }
+      }
+    } catch (_) {}
+    return Future.value(true);
+  });
+}
+
+Future<void> showSystemNotification({required String title, required String body}) async {
+  final androidDetails = AndroidNotificationDetails(
+    'danger_zone_channel',
+    'Danger Zone Alerts',
+    channelDescription: 'High priority alerts when child enters danger zone',
+    importance: Importance.max,
+    priority: Priority.high,
+    playSound: true,
+    enableVibration: true,
+    fullScreenIntent: true,
+  );
+  final notifDetails = NotificationDetails(android: androidDetails);
+  await flutterLocalNotificationsPlugin.show(
+    id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+    title: title,
+    body: body,
+    notificationDetails: notifDetails,
+  );
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+  const initSettings = InitializationSettings(android: androidInit);
+  await flutterLocalNotificationsPlugin.initialize(settings: initSettings);
+
+  // Request notification permission for Android 13+
+  flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+      ?.requestNotificationsPermission();
+
+  try {
+    Workmanager().initialize(callbackDispatcher);
+    Workmanager().registerPeriodicTask(
+      "1",
+      backgroundTaskKey,
+      frequency: const Duration(minutes: 15),
+      inputData: {'host': appServerHost},
+      existingWorkPolicy: ExistingPeriodicWorkPolicy.update,
+    );
+  } catch (_) {}
+
   runApp(const DeepChildShieldApp());
 }
 
@@ -1122,6 +1209,10 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
 
       if (inDanger && zoneName != null) {
         showDangerPopup(zoneName, childConfidence);
+        showSystemNotification(
+          title: '🚨 DANGER ZONE ALERT: $zoneName!',
+          body: 'Child detected entering hazard area! Check child immediately.',
+        );
       }
     } catch (e) {
       if (!mounted || !monitoring) return;
