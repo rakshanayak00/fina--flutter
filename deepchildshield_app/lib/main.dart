@@ -902,10 +902,16 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
 
   static Uri get frameUri => Uri.parse('$apiBaseUrl/api/camera/frame');
 
+  double regionLeft = 20.0;
+  double regionTop = 20.0;
+  double regionRight = 80.0;
+  double regionBottom = 75.0;
+
   @override
   void initState() {
     super.initState();
     fetchActiveZones();
+    toggleMonitoring();
   }
 
   @override
@@ -1085,33 +1091,21 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
   }
 
   void promptSaveRegion(double boxWidth, double boxHeight) {
-    if (dragStart == null || dragCurrent == null) return;
+    promptSaveRegionWithValues(
+      leftPct: regionLeft,
+      topPct: regionTop,
+      rightPct: regionRight,
+      bottomPct: regionBottom,
+    );
+  }
 
-    final left = math.min(dragStart!.dx, dragCurrent!.dx).clamp(0.0, boxWidth);
-    final top = math.min(dragStart!.dy, dragCurrent!.dy).clamp(0.0, boxHeight);
-    final right = math.max(dragStart!.dx, dragCurrent!.dx).clamp(0.0, boxWidth);
-    final bottom = math.max(dragStart!.dy, dragCurrent!.dy).clamp(0.0, boxHeight);
-
-    final width = right - left;
-    final height = bottom - top;
-
-    if (width < 25 || height < 25) {
-      setState(() {
-        dragStart = null;
-        dragCurrent = null;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please drag a larger box over the hazard area')),
-      );
-      return;
-    }
-
-    final leftPct = double.parse(((left / boxWidth) * 100).toStringAsFixed(1));
-    final topPct = double.parse(((top / boxHeight) * 100).toStringAsFixed(1));
-    final rightPct = double.parse(((right / boxWidth) * 100).toStringAsFixed(1));
-    final bottomPct = double.parse(((bottom / boxHeight) * 100).toStringAsFixed(1));
-
-    final nameController = TextEditingController(text: 'Window Danger Spot');
+  void promptSaveRegionWithValues({
+    required double leftPct,
+    required double topPct,
+    required double rightPct,
+    required double bottomPct,
+  }) {
+    final nameController = TextEditingController(text: 'Hazard Danger Spot');
     String severity = 'danger';
 
     showDialog(
@@ -1336,7 +1330,7 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
       fetchFrame();
 
       pollingTimer = Timer.periodic(
-        const Duration(milliseconds: 1200),
+        const Duration(milliseconds: 300),
         (_) => fetchFrame(),
       );
     }
@@ -1373,20 +1367,6 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                 builder: (context, constraints) {
                   final boxW = constraints.maxWidth;
                   final boxH = constraints.maxHeight;
-
-                  double? selLeft;
-                  double? selTop;
-                  double? selWidth;
-                  double? selHeight;
-
-                  if (dragStart != null && dragCurrent != null) {
-                    selLeft = math.min(dragStart!.dx, dragCurrent!.dx).clamp(0.0, boxW);
-                    selTop = math.min(dragStart!.dy, dragCurrent!.dy).clamp(0.0, boxH);
-                    final selRight = math.max(dragStart!.dx, dragCurrent!.dx).clamp(0.0, boxW);
-                    final selBottom = math.max(dragStart!.dy, dragCurrent!.dy).clamp(0.0, boxH);
-                    selWidth = selRight - selLeft;
-                    selHeight = selBottom - selTop;
-                  }
 
                   return Stack(
                     children: [
@@ -1508,62 +1488,60 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                             },
                           ),
 
-                      // User interactive drag selection box
-                      if (selLeft != null &&
-                          selTop != null &&
-                          selWidth != null &&
-                          selHeight != null)
-                        Positioned(
-                          left: selLeft,
-                          top: selTop,
-                          width: selWidth,
-                          height: selHeight,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.redAccent, width: 2.5),
-                              color: Colors.red.withValues(alpha: 0.28),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            alignment: Alignment.center,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 3),
-                              decoration: BoxDecoration(
-                                color: Colors.redAccent,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: const Text(
-                                'DANGER SPOT REGION',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
+                      // User interactive drag selection box or live adjustable danger region
+                      if (isSelectingRegion)
+                        Builder(
+                          builder: (context) {
+                            final selLeft = (regionLeft / 100.0) * boxW;
+                            final selTop = (regionTop / 100.0) * boxH;
+                            final selWidth = ((regionRight - regionLeft) / 100.0) * boxW;
+                            final selHeight = ((regionBottom - regionTop) / 100.0) * boxH;
+
+                            return Positioned(
+                              left: selLeft,
+                              top: selTop,
+                              width: math.max(30, selWidth),
+                              height: math.max(30, selHeight),
+                              child: GestureDetector(
+                                onPanUpdate: (details) {
+                                  final dxPct = (details.delta.dx / boxW) * 100.0;
+                                  final dyPct = (details.delta.dy / boxH) * 100.0;
+                                  setState(() {
+                                    final width = regionRight - regionLeft;
+                                    final height = regionBottom - regionTop;
+                                    regionLeft = (regionLeft + dxPct).clamp(0.0, 100.0 - width);
+                                    regionRight = regionLeft + width;
+                                    regionTop = (regionTop + dyPct).clamp(0.0, 100.0 - height);
+                                    regionBottom = regionTop + height;
+                                  });
+                                },
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    border: Border.all(color: Colors.redAccent, width: 2.8),
+                                    color: Colors.red.withValues(alpha: 0.35),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Center(
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black87,
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: const Text(
+                                        'DRAG TO MOVE SPOT',
+                                        style: TextStyle(
+                                          color: Colors.yellowAccent,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
-                        ),
-
-                      // Transparent gesture detector for dragging danger spot
-                      if (isSelectingRegion)
-                        Positioned.fill(
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onPanStart: (details) {
-                              setState(() {
-                                dragStart = details.localPosition;
-                                dragCurrent = details.localPosition;
-                              });
-                            },
-                            onPanUpdate: (details) {
-                              setState(() {
-                                dragCurrent = details.localPosition;
-                              });
-                            },
-                            onPanEnd: (details) {
-                              promptSaveRegion(boxW, boxH);
-                            },
-                          ),
+                            );
+                          },
                         ),
 
                       // Instruction banner when in region selection mode
@@ -1587,7 +1565,7 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                                 SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
-                                    'Drag your finger across camera to mark hazard spot',
+                                    'Drag box on camera or adjust sliders below',
                                     style: TextStyle(
                                       color: Colors.white,
                                       fontSize: 12,
@@ -1788,6 +1766,84 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                 });
               },
             ),
+            if (isSelectingRegion) ...[
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.red.shade200, width: 1.5),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.tune, color: dangerRed),
+                        SizedBox(width: 8),
+                        Text(
+                          'Smooth Danger Spot Adjuster',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: textDark),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text('Horizontal Position (${regionLeft.toInt()}% - ${regionRight.toInt()}%)', style: const TextStyle(fontSize: 12, color: textGrey)),
+                    RangeSlider(
+                      values: RangeValues(regionLeft, regionRight),
+                      min: 0,
+                      max: 100,
+                      divisions: 100,
+                      activeColor: dangerRed,
+                      onChanged: (vals) {
+                        if (vals.end - vals.start >= 10) {
+                          setState(() {
+                            regionLeft = vals.start;
+                            regionRight = vals.end;
+                          });
+                        }
+                      },
+                    ),
+                    Text('Vertical Position (${regionTop.toInt()}% - ${regionBottom.toInt()}%)', style: const TextStyle(fontSize: 12, color: textGrey)),
+                    RangeSlider(
+                      values: RangeValues(regionTop, regionBottom),
+                      min: 0,
+                      max: 100,
+                      divisions: 100,
+                      activeColor: dangerRed,
+                      onChanged: (vals) {
+                        if (vals.end - vals.start >= 10) {
+                          setState(() {
+                            regionTop = vals.start;
+                            regionBottom = vals.end;
+                          });
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: safeGreen,
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size(double.infinity, 48),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      icon: const Icon(Icons.check_circle_outline),
+                      label: const Text('SAVE THIS DANGER SPOT NOW', style: TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: () {
+                        promptSaveRegionWithValues(
+                          leftPct: regionLeft,
+                          topPct: regionTop,
+                          rightPct: regionRight,
+                          bottomPct: regionBottom,
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 10),
             OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
