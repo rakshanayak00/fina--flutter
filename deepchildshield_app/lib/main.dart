@@ -17,7 +17,7 @@ void startForegroundMonitoringCallback() {
 }
 
 class ChildShieldTaskHandler extends TaskHandler {
-  int _lastSeenAlertId = 0;
+  String? _lastSeenAlertTimestamp;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -37,12 +37,23 @@ class ChildShieldTaskHandler extends TaskHandler {
         final list = jsonDecode(res.body);
         if (list is List && list.isNotEmpty) {
           final latest = list.first;
-          final int alertId = latest['id'] ?? (DateTime.now().millisecondsSinceEpoch ~/ 1000);
-          final String zone = latest['zone'] ?? 'Danger Zone';
+          final String? alertTimestamp = latest['timestamp']?.toString();
+          final String zone = (latest['danger_zone'] ?? latest['zone'] ?? 'Danger Zone').toString();
           final conf = latest['confidence'] != null ? '${(latest['confidence'] * 100).toInt()}%' : '';
 
-          if (alertId != _lastSeenAlertId) {
-            _lastSeenAlertId = alertId;
+          if (alertTimestamp != null) {
+            final parsedTime = DateTime.tryParse(alertTimestamp);
+            if (parsedTime != null) {
+              final ageInSeconds = DateTime.now().difference(parsedTime).inSeconds.abs();
+              // Only alert if the danger event happened in the last 15 seconds!
+              if (ageInSeconds > 15) {
+                return;
+              }
+            }
+          }
+
+          if (alertTimestamp != null && alertTimestamp != _lastSeenAlertTimestamp) {
+            _lastSeenAlertTimestamp = alertTimestamp;
 
             final androidDetails = AndroidNotificationDetails(
               'danger_zone_channel',
