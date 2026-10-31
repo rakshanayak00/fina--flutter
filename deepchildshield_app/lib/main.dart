@@ -48,6 +48,10 @@ const Color textGrey = Color(0xFF687789);
 const Color dangerRed = Color(0xFFD93434);
 const Color safeGreen = Color(0xFF198754);
 
+// Global backend address (supports both emulator 127.0.0.1 and physical phone on Wi-Fi)
+String appServerHost = '192.168.29.217:5001';
+String get apiBaseUrl => 'http://$appServerHost';
+
 // ============================================================
 // TEMPORARY LOCAL ACCOUNT STORAGE
 // ============================================================
@@ -77,7 +81,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
 
-  static const String apiBase = 'http://127.0.0.1:5001';
+  static String get apiBase => apiBaseUrl;
 
   Future<void> login() async {
     final email = emailController.text.trim();
@@ -315,7 +319,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://127.0.0.1:5001/api/auth/register'),
+        Uri.parse('$apiBaseUrl/api/auth/register'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'name': name,
@@ -719,8 +723,7 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
 
   Timer? pollingTimer;
 
-  static final Uri frameUri =
-      Uri.parse('http://127.0.0.1:5001/api/camera/frame');
+  static Uri get frameUri => Uri.parse('$apiBaseUrl/api/camera/frame');
 
   @override
   void initState() {
@@ -737,7 +740,7 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
   Future<void> fetchActiveZones() async {
     try {
       final response = await http
-          .get(Uri.parse('http://127.0.0.1:5001/api/danger-zones'))
+          .get(Uri.parse('$apiBaseUrl/api/danger-zones'))
           .timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -768,7 +771,7 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://127.0.0.1:5001/api/danger-zones'),
+        Uri.parse('$apiBaseUrl/api/danger-zones'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'name': name.isEmpty ? 'Selected Danger Spot' : name,
@@ -1635,7 +1638,7 @@ class DangerZonesScreen extends StatefulWidget {
 }
 
 class _DangerZonesScreenState extends State<DangerZonesScreen> {
-  static const String apiBase = 'http://127.0.0.1:5001';
+  static String get apiBase => apiBaseUrl;
 
   List<dynamic> zones = [];
   bool loading = true;
