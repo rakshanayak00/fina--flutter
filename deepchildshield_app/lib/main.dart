@@ -5,49 +5,124 @@ import 'dart:typed_data';
 import 'dart:math' as math;
 import 'package:http/http.dart' as http;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:workmanager/workmanager.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
     FlutterLocalNotificationsPlugin();
 
-const String backgroundTaskKey = "deepchildshield_background_monitor";
-
 @pragma('vm:entry-point')
-void callbackDispatcher() {
-  Workmanager().executeTask((task, inputData) async {
+void startForegroundMonitoringCallback() {
+  FlutterForegroundTask.setTaskHandler(ChildShieldTaskHandler());
+}
+
+class ChildShieldTaskHandler extends TaskHandler {
+  int _lastSeenAlertId = 0;
+
+  @override
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
+    _checkDangerAlerts();
+  }
+
+  @override
+  void onRepeatEvent(DateTime timestamp) {
+    _checkDangerAlerts();
+  }
+
+  Future<void> _checkDangerAlerts() async {
     try {
-      final host = inputData?['host'] ?? '192.168.29.217:5001';
-      final url = Uri.parse('http://$host/api/alerts');
-      final res = await http.get(url).timeout(const Duration(seconds: 4));
+      final url = Uri.parse('http://$appServerHost/api/alerts');
+      final res = await http.get(url).timeout(const Duration(seconds: 3));
       if (res.statusCode == 200) {
         final list = jsonDecode(res.body);
         if (list is List && list.isNotEmpty) {
           final latest = list.first;
-          final zone = latest['zone'] ?? 'Danger Zone';
+          final int alertId = latest['id'] ?? (DateTime.now().millisecondsSinceEpoch ~/ 1000);
+          final String zone = latest['zone'] ?? 'Danger Zone';
           final conf = latest['confidence'] != null ? '${(latest['confidence'] * 100).toInt()}%' : '';
-          
-          final androidDetails = AndroidNotificationDetails(
-            'danger_zone_channel',
-            'Danger Zone Alerts',
-            channelDescription: 'High priority alerts when child enters danger zone',
-            importance: Importance.max,
-            priority: Priority.high,
-            playSound: true,
-            enableVibration: true,
-            fullScreenIntent: true,
-          );
-          final notifDetails = NotificationDetails(android: androidDetails);
-          await flutterLocalNotificationsPlugin.show(
-            id: 1001,
-            title: '🚨 DANGER ZONE ALERT!',
-            body: 'Child detected in $zone ($conf)! Take immediate action.',
-            notificationDetails: notifDetails,
-          );
+
+          if (alertId != _lastSeenAlertId) {
+            _lastSeenAlertId = alertId;
+
+            final androidDetails = AndroidNotificationDetails(
+              'danger_zone_channel',
+              'Danger Zone Alerts',
+              channelDescription: 'High priority alerts when child enters danger zone',
+              importance: Importance.max,
+              priority: Priority.high,
+              playSound: true,
+              enableVibration: true,
+              fullScreenIntent: true,
+            );
+            final notifDetails = NotificationDetails(android: androidDetails);
+            await flutterLocalNotificationsPlugin.show(
+              id: 9999,
+              title: '🚨 DANGER ZONE ALERT: $zone!',
+              body: 'Child is inside danger area $zone ($conf)! Take action now!',
+              notificationDetails: notifDetails,
+            );
+
+            FlutterForegroundTask.updateService(
+              notificationTitle: '🚨 CRITICAL: CHILD IN DANGER ZONE ($zone)!',
+              notificationText: 'Tap to view live monitoring camera immediately',
+            );
+          }
         }
       }
     } catch (_) {}
-    return Future.value(true);
-  });
+  }
+
+  @override
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
+
+  @override
+  void onReceiveData(Object data) {}
+
+  @override
+  void onNotificationButtonPressed(String id) {}
+
+  @override
+  void onNotificationPressed() {}
+
+  @override
+  void onNotificationDismissed() {}
+}
+
+Future<void> initForegroundService() async {
+  FlutterForegroundTask.init(
+    androidNotificationOptions: AndroidNotificationOptions(
+      channelId: 'child_monitor_live_service',
+      channelName: 'DeepChildShield Live Guard',
+      channelDescription: 'Continuous background monitoring for child safety',
+      onlyAlertOnce: true,
+    ),
+    iosNotificationOptions: const IOSNotificationOptions(
+      showNotification: false,
+      playSound: false,
+    ),
+    foregroundTaskOptions: ForegroundTaskOptions(
+      eventAction: ForegroundTaskEventAction.repeat(3000),
+      autoRunOnBoot: true,
+      autoRunOnMyPackageReplaced: true,
+      allowWakeLock: true,
+      allowWifiLock: true,
+    ),
+  );
+}
+
+Future<void> startBackgroundMonitoringService() async {
+  try {
+    if (await FlutterForegroundTask.isRunningService) {
+      await FlutterForegroundTask.restartService();
+    } else {
+      await FlutterForegroundTask.startService(
+        serviceId: 501,
+        notificationTitle: '🛡️ DeepChildShield Protection Active',
+        notificationText: 'Live monitoring camera & danger zones in background',
+        callback: startForegroundMonitoringCallback,
+      );
+    }
+  } catch (_) {}
 }
 
 Future<void> showSystemNotification({required String title, required String body}) async {
@@ -77,23 +152,17 @@ void main() async {
   const initSettings = InitializationSettings(android: androidInit);
   await flutterLocalNotificationsPlugin.initialize(settings: initSettings);
 
-  // Request notification permission for Android 13+
   flutterLocalNotificationsPlugin
       .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
       ?.requestNotificationsPermission();
 
-  try {
-    Workmanager().initialize(callbackDispatcher);
-    Workmanager().registerPeriodicTask(
-      "1",
-      backgroundTaskKey,
-      frequency: const Duration(minutes: 15),
-      inputData: {'host': appServerHost},
-      existingWorkPolicy: ExistingPeriodicWorkPolicy.update,
-    );
-  } catch (_) {}
+  initForegroundService();
+  startBackgroundMonitoringService();
 
-  runApp(const DeepChildShieldApp());
+  final prefs = await SharedPreferences.getInstance();
+  final savedUser = prefs.getString('saved_user_name');
+
+  runApp(DeepChildShieldApp(initialUser: savedUser));
 }
 
 // ===================================
@@ -101,7 +170,8 @@ void main() async {
 // ============================================================
 
 class DeepChildShieldApp extends StatelessWidget {
-  const DeepChildShieldApp({super.key});
+  final String? initialUser;
+  const DeepChildShieldApp({super.key, this.initialUser});
 
   @override
   Widget build(BuildContext context) {
@@ -117,7 +187,7 @@ class DeepChildShieldApp extends StatelessWidget {
         ),
         scaffoldBackgroundColor: const Color(0xFFF5F8FC),
       ),
-      home: const LoginScreen(),
+      home: initialUser != null ? HomeScreen(userName: initialUser!) : const LoginScreen(),
     );
   }
 }
@@ -193,13 +263,17 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (response.statusCode == 200) {
         final user = data['user'];
+        final userName = user['name'] ?? 'Parent';
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('saved_user_name', userName);
+
         if (!mounted) return;
 
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
             builder: (_) => HomeScreen(
-              userName: user['name'] ?? 'Parent',
+              userName: userName,
             ),
           ),
         );
@@ -2573,7 +2647,10 @@ class SettingsScreen extends StatelessWidget {
             text: 'LOGOUT',
             icon: Icons.logout,
             danger: true,
-            onPressed: () {
+            onPressed: () async {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove('saved_user_name');
+              if (!context.mounted) return;
               Navigator.pushAndRemoveUntil(
                 context,
                 MaterialPageRoute(
