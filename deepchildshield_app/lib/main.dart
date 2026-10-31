@@ -715,6 +715,9 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
   Offset? dragCurrent;
   List<dynamic> activeZones = [];
 
+  bool childInDangerZone = false;
+  String? currentDangerZoneName;
+
   double? confidence;
   Uint8List? frameBytes;
 
@@ -988,6 +991,9 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
         }
       }
 
+      final bool inDanger = decoded['childInDangerZone'] == true;
+      final String? zoneName = decoded['dangerZoneName']?.toString();
+
       final imageBytes = base64Decode(imageData);
 
       if (!mounted || !monitoring) return;
@@ -997,11 +1003,15 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
         frameBytes = imageBytes;
         childDetected = foundChild;
         adultDetected = foundAdult;
+        childInDangerZone = inDanger;
+        currentDangerZoneName = zoneName;
         confidence = childConfidence;
         connectionMessage = 'Connected to Flask + YOLO';
-        alertMessage = foundChild
-            ? 'Child detected by YOLO'
-            : 'No child detected in the current frame';
+        alertMessage = inDanger
+            ? 'CRITICAL ALERT: Child in danger zone ($zoneName)!'
+            : foundChild
+                ? 'Child detected in secure area'
+                : 'No child detected in current frame';
       });
     } catch (e) {
       if (!mounted || !monitoring) return;
@@ -1052,9 +1062,11 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
         ? 'STOPPED'
         : !connected
             ? 'CONNECTING'
-            : childDetected
-                ? 'CHILD DETECTED'
-                : 'MONITORING ACTIVE';
+            : childInDangerZone
+                ? 'CRITICAL: IN DANGER ZONE ($currentDangerZoneName)'
+                : childDetected
+                    ? 'CHILD DETECTED (SECURE)'
+                    : 'MONITORING ACTIVE';
 
     return AppPage(
       title: 'Live Monitoring',
@@ -1345,23 +1357,38 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                           ),
                         ),
 
-                      if (childDetected && !isSelectingRegion)
+                      if ((childDetected || childInDangerZone) && !isSelectingRegion)
                         Positioned(
                           right: 14,
                           top: 14,
                           child: Container(
-                            padding: const EdgeInsets.all(8),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                             decoration: BoxDecoration(
-                              color: dangerRed.withValues(alpha: 0.9),
+                              color: childInDangerZone ? dangerRed : Colors.blue.shade700,
                               borderRadius: BorderRadius.circular(8),
                             ),
-                            child: const Text(
-                              'CHILD DETECTED',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 10,
-                              ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  childInDangerZone
+                                      ? Icons.warning_amber_rounded
+                                      : Icons.check_circle_outline,
+                                  color: Colors.white,
+                                  size: 14,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  childInDangerZone
+                                      ? 'DANGER: $currentDangerZoneName'
+                                      : 'CHILD DETECTED',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 10,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ),
@@ -1518,35 +1545,114 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
 // ALERTS
 // ============================================================
 
-class AlertsScreen extends StatelessWidget {
+class AlertsScreen extends StatefulWidget {
   const AlertsScreen({super.key});
+
+  @override
+  State<AlertsScreen> createState() => _AlertsScreenState();
+}
+
+class _AlertsScreenState extends State<AlertsScreen> {
+  List<dynamic> alerts = [];
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchAlerts();
+  }
+
+  Future<void> fetchAlerts() async {
+    try {
+      final res = await http
+          .get(Uri.parse('$apiBaseUrl/api/alerts'))
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (mounted && data is List) {
+          setState(() {
+            alerts = data;
+            loading = false;
+          });
+          return;
+        }
+      }
+    } catch (_) {}
+    if (mounted) setState(() => loading = false);
+  }
 
   @override
   Widget build(BuildContext context) {
     return AppPage(
-      title: 'Alerts',
+      title: 'Safety Alerts',
       onBack: () => Navigator.pop(context),
-      child: ListView(
-        padding: const EdgeInsets.all(20),
-        children: const [
-          AlertCard(
-            icon: Icons.check_circle_outline,
-            title: 'No Active Danger',
-            message: 'No current child-in-danger-zone event.',
-            time: 'Current Status',
-            safe: true,
-          ),
-          SizedBox(height: 14),
-          AlertCard(
-            icon: Icons.notifications_none,
-            title: 'Alert History',
-            message:
-                'Safety events detected by the monitoring system will appear here.',
-            time: 'History',
-            safe: false,
-          ),
-        ],
-      ),
+      child: loading
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: fetchAlerts,
+              child: alerts.isEmpty
+                  ? ListView(
+                      padding: const EdgeInsets.all(20),
+                      children: const [
+                        AlertCard(
+                          icon: Icons.check_circle_outline,
+                          title: 'No Active Danger',
+                          message: 'No child-in-danger-zone events recorded.',
+                          time: 'All Secure',
+                          safe: true,
+                        ),
+                      ],
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: alerts.length,
+                      itemBuilder: (context, index) {
+                        final a = alerts[index];
+                        final isDanger = a['status'] == 'danger';
+                        final zoneName = a['danger_zone'] ?? 'Hazard Area';
+                        final timeStr = '${a['date'] ?? ''} ${a['time'] ?? ''}';
+                        final conf = ((a['confidence'] ?? 0.0) * 100).toInt();
+
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            side: BorderSide(
+                              color: isDanger
+                                  ? dangerRed.withValues(alpha: 0.4)
+                                  : Colors.orange.withValues(alpha: 0.4),
+                            ),
+                          ),
+                          child: ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: isDanger
+                                  ? const Color(0xFFFFE5E5)
+                                  : const Color(0xFFFFF3E0),
+                              child: Icon(
+                                Icons.warning_amber_rounded,
+                                color: isDanger ? dangerRed : Colors.orange,
+                              ),
+                            ),
+                            title: Text(
+                              'Child Entered: $zoneName',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: textDark,
+                              ),
+                            ),
+                            subtitle: Text(
+                              'Status: ${isDanger ? "CRITICAL ALERT" : "WARNING"} (Confidence: $conf%)\nTime: $timeStr',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isDanger ? dangerRed : Colors.orange.shade800,
+                              ),
+                            ),
+                            isThreeLine: true,
+                          ),
+                        );
+                      },
+                    ),
+            ),
     );
   }
 }
