@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:math' as math;
 import 'package:http/http.dart' as http;
 
 void main() {
@@ -610,6 +611,20 @@ class HomeScreen extends StatelessWidget {
             ),
 
             DashboardCard(
+              icon: Icons.shield_outlined,
+              title: 'Danger Zones',
+              subtitle: 'Configure & manage hazard spots',
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const DangerZonesScreen(),
+                  ),
+                );
+              },
+            ),
+
+            DashboardCard(
               icon: Icons.warning_amber_rounded,
               title: 'Alerts',
               subtitle: 'View recent safety alerts',
@@ -691,6 +706,11 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
   bool adultDetected = false;
   bool isFetching = false;
 
+  bool isSelectingRegion = false;
+  Offset? dragStart;
+  Offset? dragCurrent;
+  List<dynamic> activeZones = [];
+
   double? confidence;
   Uint8List? frameBytes;
 
@@ -703,9 +723,211 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
       Uri.parse('http://127.0.0.1:5001/api/camera/frame');
 
   @override
+  void initState() {
+    super.initState();
+    fetchActiveZones();
+  }
+
+  @override
   void dispose() {
     pollingTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> fetchActiveZones() async {
+    try {
+      final response = await http
+          .get(Uri.parse('http://127.0.0.1:5001/api/danger-zones'))
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (mounted && data is List) {
+          setState(() {
+            activeZones = data;
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> saveRegionAsZone({
+    required double leftPct,
+    required double topPct,
+    required double rightPct,
+    required double bottomPct,
+    required String name,
+    required String severity,
+  }) async {
+    final points = [
+      {'x': leftPct, 'y': topPct},
+      {'x': rightPct, 'y': topPct},
+      {'x': rightPct, 'y': bottomPct},
+      {'x': leftPct, 'y': bottomPct},
+    ];
+    final color = severity == 'danger' ? '#ef4444' : '#f97316';
+
+    try {
+      final response = await http.post(
+        Uri.parse('http://127.0.0.1:5001/api/danger-zones'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'name': name.isEmpty ? 'Selected Danger Spot' : name,
+          'type': 'rectangle',
+          'points': points,
+          'severity': severity,
+          'color': color,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: safeGreen,
+            content: Text('Danger spot "$name" saved successfully!'),
+          ),
+        );
+        fetchActiveZones();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: dangerRed,
+          content: Text('Failed to save spot: $e'),
+        ),
+      );
+    }
+  }
+
+  void promptSaveRegion(double boxWidth, double boxHeight) {
+    if (dragStart == null || dragCurrent == null) return;
+
+    final left = math.min(dragStart!.dx, dragCurrent!.dx).clamp(0.0, boxWidth);
+    final top = math.min(dragStart!.dy, dragCurrent!.dy).clamp(0.0, boxHeight);
+    final right = math.max(dragStart!.dx, dragCurrent!.dx).clamp(0.0, boxWidth);
+    final bottom = math.max(dragStart!.dy, dragCurrent!.dy).clamp(0.0, boxHeight);
+
+    final width = right - left;
+    final height = bottom - top;
+
+    if (width < 25 || height < 25) {
+      setState(() {
+        dragStart = null;
+        dragCurrent = null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please drag a larger box over the hazard area')),
+      );
+      return;
+    }
+
+    final leftPct = double.parse(((left / boxWidth) * 100).toStringAsFixed(1));
+    final topPct = double.parse(((top / boxHeight) * 100).toStringAsFixed(1));
+    final rightPct = double.parse(((right / boxWidth) * 100).toStringAsFixed(1));
+    final bottomPct = double.parse(((bottom / boxHeight) * 100).toStringAsFixed(1));
+
+    final nameController = TextEditingController(text: 'Window Danger Spot');
+    String severity = 'danger';
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (dialogCtx, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+              title: const Row(
+                children: [
+                  Icon(Icons.add_location_alt_outlined, color: dangerRed),
+                  SizedBox(width: 8),
+                  Text('Mark Danger Spot', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Selected Region: [${leftPct.toInt()}%, ${topPct.toInt()}%] to [${rightPct.toInt()}%, ${bottomPct.toInt()}%]',
+                      style: const TextStyle(fontSize: 12, color: textGrey),
+                    ),
+                    const SizedBox(height: 14),
+                    const Text('Spot Name', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: nameController,
+                      decoration: InputDecoration(
+                        hintText: 'e.g. Window, Balcony Edge, Stairs',
+                        filled: true,
+                        fillColor: lightBlue,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    const Text('Risk Level', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        ChoiceChip(
+                          label: const Text('Critical Danger'),
+                          selected: severity == 'danger',
+                          selectedColor: dangerRed.withValues(alpha: 0.2),
+                          labelStyle: TextStyle(color: severity == 'danger' ? dangerRed : textGrey, fontWeight: FontWeight.bold),
+                          onSelected: (_) => setDialogState(() => severity = 'danger'),
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text('Warning'),
+                          selected: severity == 'warning',
+                          selectedColor: Colors.orange.withValues(alpha: 0.2),
+                          labelStyle: TextStyle(color: severity == 'warning' ? Colors.orange.shade800 : textGrey, fontWeight: FontWeight.bold),
+                          onSelected: (_) => setDialogState(() => severity = 'warning'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    setState(() {
+                      dragStart = null;
+                      dragCurrent = null;
+                    });
+                  },
+                  child: const Text('CANCEL / REDRAW'),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: navy, foregroundColor: Colors.white),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    setState(() {
+                      isSelectingRegion = false;
+                      dragStart = null;
+                      dragCurrent = null;
+                    });
+                    saveRegionAsZone(
+                      leftPct: leftPct,
+                      topPct: topPct,
+                      rightPct: rightPct,
+                      bottomPct: bottomPct,
+                      name: nameController.text.trim(),
+                      severity: severity,
+                    );
+                  },
+                  child: const Text('CONFIRM & SAVE'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> fetchFrame() async {
@@ -846,120 +1068,303 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                 color: const Color(0xFF17202B),
                 borderRadius: BorderRadius.circular(18),
               ),
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: frameBytes != null
-                        ? Image.memory(
-                            frameBytes!,
-                            fit: BoxFit.contain,
-                            gaplessPlayback: true,
-                            errorBuilder: (_, __, ___) =>
-                                const Center(
-                              child: Text(
-                                'Unable to display camera frame',
-                                style: TextStyle(color: Colors.white),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final boxW = constraints.maxWidth;
+                  final boxH = constraints.maxHeight;
+
+                  double? selLeft;
+                  double? selTop;
+                  double? selWidth;
+                  double? selHeight;
+
+                  if (dragStart != null && dragCurrent != null) {
+                    selLeft = math.min(dragStart!.dx, dragCurrent!.dx).clamp(0.0, boxW);
+                    selTop = math.min(dragStart!.dy, dragCurrent!.dy).clamp(0.0, boxH);
+                    final selRight = math.max(dragStart!.dx, dragCurrent!.dx).clamp(0.0, boxW);
+                    final selBottom = math.max(dragStart!.dy, dragCurrent!.dy).clamp(0.0, boxH);
+                    selWidth = selRight - selLeft;
+                    selHeight = selBottom - selTop;
+                  }
+
+                  return Stack(
+                    children: [
+                      Positioned.fill(
+                        child: frameBytes != null
+                            ? Image.memory(
+                                frameBytes!,
+                                fit: BoxFit.contain,
+                                gaplessPlayback: true,
+                                errorBuilder: (_, __, ___) =>
+                                    const Center(
+                                  child: Text(
+                                    'Unable to display camera frame',
+                                    style: TextStyle(color: Colors.white),
+                                  ),
+                                ),
+                              )
+                            : Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(
+                                      Icons.videocam_outlined,
+                                      color: Colors.white70,
+                                      size: 65,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    const Text(
+                                      'Camera Feed',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 19,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 18,
+                                      ),
+                                      child: Text(
+                                        connectionMessage,
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(
+                                          color: Colors.white60,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                      ),
+
+                      // Existing configured danger zones overlay
+                      for (final zone in activeZones)
+                        if (zone is Map &&
+                            zone['points'] is List &&
+                            (zone['points'] as List).isNotEmpty)
+                          Builder(
+                            builder: (context) {
+                              final pts = zone['points'] as List;
+                              double minX = 100.0, minY = 100.0, maxX = 0.0, maxY = 0.0;
+                              for (final p in pts) {
+                                if (p is Map) {
+                                  final px = (p['x'] as num?)?.toDouble() ?? 0.0;
+                                  final py = (p['y'] as num?)?.toDouble() ?? 0.0;
+                                  if (px < minX) minX = px;
+                                  if (py < minY) minY = py;
+                                  if (px > maxX) maxX = px;
+                                  if (py > maxY) maxY = py;
+                                }
+                              }
+                              if (maxX <= minX || maxY <= minY) {
+                                return const SizedBox.shrink();
+                              }
+
+                              final zLeft = (minX / 100.0) * boxW;
+                              final zTop = (minY / 100.0) * boxH;
+                              final zW = ((maxX - minX) / 100.0) * boxW;
+                              final zH = ((maxY - minY) / 100.0) * boxH;
+                              final isCrit = (zone['severity'] ?? '') == 'danger';
+
+                              return Positioned(
+                                left: zLeft,
+                                top: zTop,
+                                width: zW,
+                                height: zH,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    border: Border.all(
+                                      color: isCrit ? dangerRed : Colors.orange,
+                                      width: 2,
+                                    ),
+                                    color: (isCrit ? dangerRed : Colors.orange)
+                                        .withValues(alpha: 0.22),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  alignment: Alignment.topLeft,
+                                  padding: const EdgeInsets.all(4),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 5, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: isCrit ? dangerRed : Colors.orange,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      '[ZONE] ${zone['name'] ?? 'Danger Spot'}',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+
+                      // User interactive drag selection box
+                      if (selLeft != null &&
+                          selTop != null &&
+                          selWidth != null &&
+                          selHeight != null)
+                        Positioned(
+                          left: selLeft,
+                          top: selTop,
+                          width: selWidth,
+                          height: selHeight,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              border: Border.all(color: Colors.redAccent, width: 2.5),
+                              color: Colors.red.withValues(alpha: 0.28),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            alignment: Alignment.center,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: Colors.redAccent,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text(
+                                'DANGER SPOT REGION',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ),
-                          )
-                        : Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
+                          ),
+                        ),
+
+                      // Transparent gesture detector for dragging danger spot
+                      if (isSelectingRegion)
+                        Positioned.fill(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onPanStart: (details) {
+                              setState(() {
+                                dragStart = details.localPosition;
+                                dragCurrent = details.localPosition;
+                              });
+                            },
+                            onPanUpdate: (details) {
+                              setState(() {
+                                dragCurrent = details.localPosition;
+                              });
+                            },
+                            onPanEnd: (details) {
+                              promptSaveRegion(boxW, boxH);
+                            },
+                          ),
+                        ),
+
+                      // Instruction banner when in region selection mode
+                      if (isSelectingRegion)
+                        Positioned(
+                          top: 10,
+                          left: 10,
+                          right: 10,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: Colors.black87,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.redAccent, width: 1.5),
+                            ),
+                            child: const Row(
                               children: [
-                                const Icon(
-                                  Icons.videocam_outlined,
-                                  color: Colors.white70,
-                                  size: 65,
-                                ),
-                                const SizedBox(height: 12),
-                                const Text(
-                                  'Camera Feed',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 19,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 18,
-                                  ),
+                                Icon(Icons.touch_app,
+                                    color: Colors.yellowAccent, size: 20),
+                                SizedBox(width: 8),
+                                Expanded(
                                   child: Text(
-                                    connectionMessage,
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(
-                                      color: Colors.white60,
+                                    'Drag your finger across camera to mark hazard spot',
+                                    style: TextStyle(
+                                      color: Colors.white,
                                       fontSize: 12,
+                                      fontWeight: FontWeight.bold,
                                     ),
                                   ),
                                 ),
                               ],
                             ),
                           ),
-                  ),
-                  Positioned(
-                    top: 14,
-                    left: 14,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 8,
-                            height: 8,
+                        ),
+
+                      if (!isSelectingRegion)
+                        Positioned(
+                          top: 14,
+                          left: 14,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
                             decoration: BoxDecoration(
-                              color: connected
-                                  ? Colors.greenAccent
-                                  : Colors.grey,
-                              shape: BoxShape.circle,
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: connected
+                                        ? Colors.greenAccent
+                                        : Colors.grey,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 7),
+                                Text(
+                                  !monitoring
+                                      ? 'OFFLINE'
+                                      : connected
+                                          ? 'LIVE'
+                                          : 'CONNECTING',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                          const SizedBox(width: 7),
-                          Text(
-                            !monitoring
-                                ? 'OFFLINE'
-                                : connected
-                                    ? 'LIVE'
-                                    : 'CONNECTING',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 11,
+                        ),
+
+                      if (childDetected && !isSelectingRegion)
+                        Positioned(
+                          right: 14,
+                          top: 14,
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: dangerRed.withValues(alpha: 0.9),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Text(
+                              'CHILD DETECTED',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 10,
+                              ),
                             ),
                           ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  if (childDetected)
-                    Positioned(
-                      right: 14,
-                      top: 14,
-                      child: Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: dangerRed.withOpacity(.9),
-                          borderRadius: BorderRadius.circular(8),
                         ),
-                        child: const Text(
-                          'CHILD DETECTED',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 10,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
+                    ],
+                  );
+                },
               ),
             ),
             const SizedBox(height: 20),
@@ -1039,6 +1444,57 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                   ? Icons.stop_circle_outlined
                   : Icons.play_circle_outline,
               onPressed: toggleMonitoring,
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: isSelectingRegion ? Colors.grey.shade800 : dangerRed,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(double.infinity, 50),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              icon: Icon(isSelectingRegion
+                  ? Icons.cancel_outlined
+                  : Icons.crop_free_rounded),
+              label: Text(
+                isSelectingRegion
+                    ? 'CANCEL REGION SELECTION'
+                    : 'MARK DANGER REGION ON CAMERA',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              onPressed: () {
+                setState(() {
+                  isSelectingRegion = !isSelectingRegion;
+                  dragStart = null;
+                  dragCurrent = null;
+                });
+              },
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: navy,
+                side: const BorderSide(color: navy, width: 1.5),
+                minimumSize: const Size(double.infinity, 50),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              icon: const Icon(Icons.list_alt_rounded),
+              label: const Text(
+                'VIEW & MANAGE DANGER SPOTS',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const DangerZonesScreen(),
+                  ),
+                ).then((_) => fetchActiveZones());
+              },
             ),
             const SizedBox(height: 14),
             const Text(
@@ -1222,6 +1678,296 @@ class _DangerZonesScreenState extends State<DangerZonesScreen> {
     }
   }
 
+  Future<void> createZone({
+    required String name,
+    required String severity,
+    required String presetArea,
+  }) async {
+    List<Map<String, double>> points;
+    if (presetArea == 'Balcony / Window (Top)') {
+      points = [
+        {'x': 0.0, 'y': 0.0},
+        {'x': 100.0, 'y': 0.0},
+        {'x': 100.0, 'y': 45.0},
+        {'x': 0.0, 'y': 45.0},
+      ];
+    } else if (presetArea == 'Stairs / Floor Edge (Bottom)') {
+      points = [
+        {'x': 0.0, 'y': 55.0},
+        {'x': 100.0, 'y': 55.0},
+        {'x': 100.0, 'y': 100.0},
+        {'x': 0.0, 'y': 100.0},
+      ];
+    } else if (presetArea == 'Left Hazard Side') {
+      points = [
+        {'x': 0.0, 'y': 0.0},
+        {'x': 45.0, 'y': 0.0},
+        {'x': 45.0, 'y': 100.0},
+        {'x': 0.0, 'y': 100.0},
+      ];
+    } else if (presetArea == 'Right Hazard Side') {
+      points = [
+        {'x': 55.0, 'y': 0.0},
+        {'x': 100.0, 'y': 0.0},
+        {'x': 100.0, 'y': 100.0},
+        {'x': 55.0, 'y': 100.0},
+      ];
+    } else {
+      points = [
+        {'x': 20.0, 'y': 20.0},
+        {'x': 80.0, 'y': 20.0},
+        {'x': 80.0, 'y': 80.0},
+        {'x': 20.0, 'y': 80.0},
+      ];
+    }
+
+    final color = severity == 'danger' ? '#ef4444' : '#f97316';
+
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/api/danger-zones'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'name': name.isEmpty ? 'Custom Danger Spot' : name,
+          'type': 'rectangle',
+          'points': points,
+          'severity': severity,
+          'color': color,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: safeGreen,
+            content: Text('Danger spot "$name" configured successfully!'),
+          ),
+        );
+        fetchZones();
+      } else {
+        throw Exception('Server error: ${response.statusCode}');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: dangerRed,
+          content: Text('Failed to save danger spot: $e'),
+        ),
+      );
+    }
+  }
+
+  void showAddZoneDialog() {
+    final nameController = TextEditingController(text: 'Balcony Edge');
+    String selectedSeverity = 'danger';
+    String selectedPreset = 'Balcony / Window (Top)';
+
+    final presets = [
+      'Balcony / Window (Top)',
+      'Stairs / Floor Edge (Bottom)',
+      'Left Hazard Side',
+      'Right Hazard Side',
+      'Center Hazard Area',
+    ];
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 24,
+                right: 24,
+                top: 24,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: dangerRed.withValues(alpha: 0.12),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.add_location_alt_outlined,
+                            color: dangerRed,
+                            size: 26,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Configure Danger Spot',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: textDark,
+                                ),
+                              ),
+                              Text(
+                                'Define area where child fall risk is high',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: textGrey,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Hazard Spot Name',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: textDark,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: nameController,
+                      decoration: InputDecoration(
+                        hintText: 'e.g., Balcony, Window, Bed Edge, Stairs',
+                        filled: true,
+                        fillColor: lightBlue,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        prefixIcon: const Icon(Icons.edit_location_alt_outlined, color: blue),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Camera Coverage Preset',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: textDark,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      decoration: BoxDecoration(
+                        color: lightBlue,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: selectedPreset,
+                          isExpanded: true,
+                          items: presets.map((p) {
+                            return DropdownMenuItem<String>(
+                              value: p,
+                              child: Text(p, style: const TextStyle(fontSize: 14)),
+                            );
+                          }).toList(),
+                          onChanged: (val) {
+                            if (val != null) {
+                              setSheetState(() => selectedPreset = val);
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Severity Level',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: textDark,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Center(
+                              child: Text(
+                                'Critical Danger',
+                                style: TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                            selected: selectedSeverity == 'danger',
+                            selectedColor: dangerRed.withValues(alpha: 0.2),
+                            labelStyle: TextStyle(
+                              color: selectedSeverity == 'danger' ? dangerRed : textGrey,
+                            ),
+                            onSelected: (_) {
+                              setSheetState(() => selectedSeverity = 'danger');
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Center(
+                              child: Text(
+                                'Caution Warning',
+                                style: TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                            selected: selectedSeverity == 'warning',
+                            selectedColor: Colors.orange.withValues(alpha: 0.2),
+                            labelStyle: TextStyle(
+                              color: selectedSeverity == 'warning' ? Colors.orange.shade800 : textGrey,
+                            ),
+                            onSelected: (_) {
+                              setSheetState(() => selectedSeverity = 'warning');
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 26),
+                    MainButton(
+                      text: 'SAVE DANGER SPOT',
+                      icon: Icons.check_circle_outline,
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        createZone(
+                          name: nameController.text.trim(),
+                          severity: selectedSeverity,
+                          presetArea: selectedPreset,
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   Future<void> deleteZone(String id) async {
     try {
       final response = await http
@@ -1279,11 +2025,26 @@ class _DangerZonesScreenState extends State<DangerZonesScreen> {
         foregroundColor: Colors.white,
         actions: [
           IconButton(
+            onPressed: showAddZoneDialog,
+            icon: const Icon(Icons.add),
+            tooltip: 'Add Danger Spot',
+          ),
+          IconButton(
             onPressed: fetchZones,
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh',
           ),
         ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: showAddZoneDialog,
+        backgroundColor: const Color(0xFF123B6D),
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add_location_alt_outlined),
+        label: const Text(
+          'Add Danger Spot',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
       ),
       body: loading
           ? const Center(child: CircularProgressIndicator())
@@ -1308,13 +2069,71 @@ class _DangerZonesScreenState extends State<DangerZonesScreen> {
                   ),
                 )
               : zones.isEmpty
-                  ? const Center(
-                      child: Text('No danger zones configured yet.'),
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(28),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: lightBlue,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.shield_outlined,
+                                size: 55,
+                                color: blue,
+                              ),
+                            ),
+                            const SizedBox(height: 18),
+                            const Text(
+                              'No Danger Spots Configured',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: textDark,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Mark hazardous areas (e.g. Balcony, Window, Stairs) to protect your child with real-time detection.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: textGrey,
+                                height: 1.4,
+                              ),
+                            ),
+                            const SizedBox(height: 22),
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: navy,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 24,
+                                  vertical: 14,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              onPressed: showAddZoneDialog,
+                              icon: const Icon(Icons.add_location_alt_outlined),
+                              label: const Text(
+                                'CONFIGURE DANGER SPOT',
+                                style: TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     )
                   : RefreshIndicator(
                       onRefresh: fetchZones,
                       child: ListView.builder(
-                        padding: const EdgeInsets.all(16),
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
                         itemCount: zones.length,
                         itemBuilder: (context, index) {
                           final zone = zones[index];
@@ -1324,26 +2143,43 @@ class _DangerZonesScreenState extends State<DangerZonesScreen> {
                           final type = zone['type']?.toString() ?? 'polygon';
                           final id = zone['id']?.toString() ?? '';
 
+                          final isCritical = severity.toLowerCase() == 'danger';
+
                           return Card(
                             margin: const EdgeInsets.only(bottom: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              side: BorderSide(
+                                color: isCritical
+                                    ? dangerRed.withValues(alpha: 0.3)
+                                    : Colors.orange.withValues(alpha: 0.3),
+                              ),
+                            ),
                             child: ListTile(
-                              leading: const CircleAvatar(
-                                backgroundColor: Color(0xFFFFE5E5),
+                              leading: CircleAvatar(
+                                backgroundColor: isCritical
+                                    ? const Color(0xFFFFE5E5)
+                                    : const Color(0xFFFFF3E0),
                                 child: Icon(
                                   Icons.warning_amber_rounded,
-                                  color: Colors.red,
+                                  color: isCritical ? Colors.red : Colors.orange,
                                 ),
                               ),
                               title: Text(
                                 name,
                                 style: const TextStyle(
                                   fontWeight: FontWeight.bold,
+                                  color: textDark,
                                 ),
                               ),
                               subtitle: Text(
-                                'Type: $type\nSeverity: $severity',
+                                'Coverage: $type • ${isCritical ? "CRITICAL DANGER" : "CAUTION WARNING"}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: isCritical ? dangerRed : Colors.orange.shade800,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
-                              isThreeLine: true,
                               trailing: IconButton(
                                 icon: const Icon(Icons.delete_outline,
                                     color: Colors.red),
