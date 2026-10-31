@@ -717,6 +717,8 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
 
   bool childInDangerZone = false;
   String? currentDangerZoneName;
+  bool isAlertPopupOpen = false;
+  DateTime? lastAlertPopupTime;
 
   double? confidence;
   Uint8List? frameBytes;
@@ -738,6 +740,110 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
   void dispose() {
     pollingTimer?.cancel();
     super.dispose();
+  }
+
+  void showDangerPopup(String zoneName, double? conf) {
+    if (isAlertPopupOpen) return;
+    final now = DateTime.now();
+    if (lastAlertPopupTime != null && now.difference(lastAlertPopupTime!).inSeconds < 8) {
+      return;
+    }
+
+    isAlertPopupOpen = true;
+    lastAlertPopupTime = now;
+
+    final confPct = conf != null ? (conf * 100).toStringAsFixed(1) : null;
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogCtx) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: const BorderSide(color: dangerRed, width: 2),
+          ),
+          backgroundColor: Colors.white,
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFE5E5),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.warning_rounded,
+                  color: dangerRed,
+                  size: 28,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'CRITICAL DANGER ALERT',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: dangerRed,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Child entered danger zone: $zoneName!',
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: textDark,
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Immediate parent action recommended. Check on your child to prevent injury or fall.',
+                style: TextStyle(fontSize: 13, color: textGrey, height: 1.4),
+              ),
+              if (confPct != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF5F8FC),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    'AI Detection Confidence: $confPct%',
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: navy),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: dangerRed,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+              ),
+              onPressed: () {
+                isAlertPopupOpen = false;
+                Navigator.pop(dialogCtx);
+              },
+              child: const Text('ACKNOWLEDGE & DISMISS', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    ).then((_) {
+      isAlertPopupOpen = false;
+    });
   }
 
   Future<void> fetchActiveZones() async {
@@ -1013,6 +1119,10 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                 ? 'Child detected in secure area'
                 : 'No child detected in current frame';
       });
+
+      if (inDanger && zoneName != null) {
+        showDangerPopup(zoneName, childConfidence);
+      }
     } catch (e) {
       if (!mounted || !monitoring) return;
 
